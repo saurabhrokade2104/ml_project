@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: flutter-frontend
+    env: node
+    buildCommand: |
+      curl -fsSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.24.0-stable.tar.xz -o flutter.tar.xz
+      tar xf flutter.tar.xz
+      export PATH="$PATH:`pwd`/flutter/bin"
+      flutter build web --release
+      npm install
+    startCommand: npm start
