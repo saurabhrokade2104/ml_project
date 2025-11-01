@@ -344,7 +344,6 @@ from flask import Flask, Response, jsonify, request
 import cv2
 import numpy as np
 import tensorflow as tf
-import mediapipe as mp
 from flask_cors import CORS
 import threading
 import time
@@ -368,8 +367,15 @@ except Exception as e:
     model = None
     MODEL_LOADED = False
 
-# Initialize MediaPipe Face Detection
-mp_face = mp.solutions.face_detection
+# Try to load MediaPipe (optional)
+try:
+    import mediapipe as mp
+    mp_face = mp.solutions.face_detection
+    MEDIAPIPE_AVAILABLE = True
+    print("✅ MediaPipe loaded successfully")
+except ImportError:
+    MEDIAPIPE_AVAILABLE = False
+    print("⚠️  MediaPipe not available - using full frame detection")
 
 # Global state for monitoring
 monitoring_active = False
@@ -412,8 +418,8 @@ def preprocess(img):
         print(f"Preprocessing error: {e}")
         return None
 
-def predict_engagement(frame, face_detector):
-    """Predict engagement status with face detection"""
+def predict_engagement(frame, face_detector=None):
+    """Predict engagement status with optional face detection"""
     if model is None:
         # Fallback to mock prediction if model not loaded
         import random
@@ -423,36 +429,37 @@ def predict_engagement(frame, face_detector):
         color = (0, 255, 0) if label == "Engaged" else (0, 0, 255)
         return label, confidence, color, None, "MOCK"
     
-    # Face detection
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_detector.process(rgb)
-    
     roi = frame
     bbox = None
     source = "Full Frame"
     
-    if results.detections:
-        d = results.detections[0].location_data.relative_bounding_box
-        h, w = frame.shape[:2]
+    # Use MediaPipe if available
+    if MEDIAPIPE_AVAILABLE and face_detector:
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = face_detector.process(rgb)
         
-        # Calculate bounding box with padding
-        x1 = int(d.xmin * w)
-        y1 = int(d.ymin * h)
-        bw = int(d.width * w)
-        bh = int(d.height * h)
-        
-        # Add padding
-        pad_w = int(0.2 * bw)
-        pad_h = int(0.5 * bh)
-        x1 = max(0, x1 - pad_w)
-        y1 = max(0, y1 - pad_h)
-        x2 = min(w, x1 + bw + 2*pad_w)
-        y2 = min(h, y1 + bh + 2*pad_h)
-        
-        if x2 > x1 and y2 > y1:
-            roi = frame[y1:y2, x1:x2]
-            bbox = (x1, y1, x2, y2)
-            source = "Face Crop"
+        if results.detections:
+            d = results.detections[0].location_data.relative_bounding_box
+            h, w = frame.shape[:2]
+            
+            # Calculate bounding box with padding
+            x1 = int(d.xmin * w)
+            y1 = int(d.ymin * h)
+            bw = int(d.width * w)
+            bh = int(d.height * h)
+            
+            # Add padding
+            pad_w = int(0.2 * bw)
+            pad_h = int(0.5 * bh)
+            x1 = max(0, x1 - pad_w)
+            y1 = max(0, y1 - pad_h)
+            x2 = min(w, x1 + bw + 2*pad_w)
+            y2 = min(h, y1 + bh + 2*pad_h)
+            
+            if x2 > x1 and y2 > y1:
+                roi = frame[y1:y2, x1:x2]
+                bbox = (x1, y1, x2, y2)
+                source = "Face Crop"
     
     # Predict
     try:
@@ -473,7 +480,10 @@ def predict_engagement(frame, face_detector):
 
 def gen_frames():
     """Generate video frames with ML predictions"""
-    face_detector = mp_face.FaceDetection(min_detection_confidence=0.5)
+    face_detector = None
+    if MEDIAPIPE_AVAILABLE:
+        face_detector = mp_face.FaceDetection(min_detection_confidence=0.5)
+    
     cam = get_camera()
     
     if cam is None:
@@ -501,7 +511,7 @@ def gen_frames():
             time.sleep(0.1)
             continue
         
-        # Get prediction with face detection
+        # Get prediction with optional face detection
         label, confidence, color, bbox, source = predict_engagement(frame, face_detector)
         
         # Calculate FPS
@@ -542,7 +552,8 @@ def gen_frames():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
     
-    face_detector.close()
+    if face_detector and MEDIAPIPE_AVAILABLE:
+        face_detector.close()
     print(f"Video stream ended. Total frames: {frame_count}")
 
 @app.route('/')
@@ -552,6 +563,7 @@ def index():
         "message": "Student Concentration Detection API",
         "status": "active",
         "model_loaded": MODEL_LOADED,
+        "mediapipe_available": MEDIAPIPE_AVAILABLE,
         "model_path": MODEL_PATH if MODEL_LOADED else None,
         "monitoring": monitoring_active,
         "mode": "ML" if MODEL_LOADED else "Mock",
@@ -609,6 +621,7 @@ def monitoring_status():
     return jsonify({
         "monitoring": monitoring_active,
         "model_loaded": MODEL_LOADED,
+        "mediapipe_available": MEDIAPIPE_AVAILABLE,
         "mode": "ML" if MODEL_LOADED else "Mock"
     })
 
@@ -642,9 +655,14 @@ def predict_frame():
         if img is None:
             return jsonify({"error": "Invalid image"}), 400
         
-        face_detector = mp_face.FaceDetection(min_detection_confidence=0.5)
+        face_detector = None
+        if MEDIAPIPE_AVAILABLE:
+            face_detector = mp_face.FaceDetection(min_detection_confidence=0.5)
+        
         label, confidence, _, _, source = predict_engagement(img, face_detector)
-        face_detector.close()
+        
+        if face_detector and MEDIAPIPE_AVAILABLE:
+            face_detector.close()
         
         return jsonify({
             "status": label,
@@ -657,11 +675,11 @@ def predict_frame():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    # Get port from environment variable (Render sets this)
+    # Get port from environment variable (Railway/Render sets this)
     port = int(os.environ.get('PORT', 5050))
     
-    # Check if running in production (Render sets RENDER env variable)
-    is_production = os.environ.get('RENDER', False)
+    # Check if running in production
+    is_production = os.environ.get('RENDER', False) or os.environ.get('RAILWAY_ENVIRONMENT', False)
     debug_mode = not is_production
     
     print("="*70)
@@ -673,10 +691,15 @@ if __name__ == '__main__':
         print(f"✅ Model loaded successfully - REAL predictions enabled")
     else:
         print(f"⚠️  ML Model: NOT LOADED")
-        print(f"⚠️  Using mock predictions - Install TensorFlow and train model")
+        print(f"⚠️  Using mock predictions")
+    
+    if MEDIAPIPE_AVAILABLE:
+        print(f"✅ MediaPipe: Available (Face detection enabled)")
+    else:
+        print(f"⚠️  MediaPipe: Not available (Using full frame)")
     
     print("")
-    print(f"🌐 Environment: {'PRODUCTION (Render)' if is_production else 'LOCAL DEVELOPMENT'}")
+    print(f"🌐 Environment: {'PRODUCTION' if is_production else 'LOCAL DEVELOPMENT'}")
     print(f"🌐 Server running on: http://0.0.0.0:{port}")
     if not is_production:
         print(f"📱 For Flutter app: http://YOUR_IP:{port}")
