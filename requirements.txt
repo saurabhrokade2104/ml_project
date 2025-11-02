@@ -1,7 +1,7 @@
 flask==3.0.0
 flask-cors==4.0.0
 tensorflow>=2.13.0
-mediapipe==0.10.8
+mediapipe>=0.10.0
 opencv-python-headless==4.10.0.84
 numpy>=2.1.0
 pillow==10.4.0
